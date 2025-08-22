@@ -2,6 +2,19 @@ import os, json, tempfile, uuid, re, threading, sys, time, logging
 from pathlib import Path
 from typing import Optional
 
+# -------- Custom Exceptions --------
+class SQSMessageValidationError(Exception):
+    """Raised when an SQS message fails validation."""
+    
+    def __init__(self, message: str, missing_fields: list = None, received_fields: dict = None):
+        self.message = message
+        self.missing_fields = missing_fields or []
+        self.received_fields = received_fields or {}
+        super().__init__(self.message)
+    
+    def __str__(self):
+        return f"SQSMessageValidationError: {self.message}"
+
 # ---- Force HF offline at runtime (no network) ----
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -247,14 +260,38 @@ def process_job(job: dict):
       "use_alignment": true         # optional; if false => naive timing
     }
     """
+    # Handle SNS message envelope - extract the actual message
+    actual_job = job
+    if "Type" in job and job["Type"] == "Notification" and "Message" in job:
+        try:
+            # Parse the nested JSON message from SNS
+            actual_job = json.loads(job["Message"])
+            log.info("[sns] Extracted job from SNS notification envelope")
+        except json.JSONDecodeError as e:
+            raise SQSMessageValidationError(
+                message=f"Failed to parse SNS Message field as JSON: {e}",
+                missing_fields=[],
+                received_fields=job
+            )
+    
     # Required fields
-    if "text" not in job or "parent_id" not in job or "tts_task_id" not in job or "srt_task_id" not in job:
-        raise ValueError("Job must include 'text', 'parent_id', 'tts_task_id', and 'srt_task_id' fields.")
+    required_fields = ["text", "parent_id", "tts_task_id", "srt_task_id"]
+    missing_fields = [field for field in required_fields if field not in actual_job]
+    
+    if missing_fields:
+        raise SQSMessageValidationError(
+            message=f"Job missing required fields: {', '.join(missing_fields)}",
+            missing_fields=missing_fields,
+            received_fields=actual_job
+        )
 
-    text         = job["text"]
-    parent_id    = job["parent_id"]
-    tts_task_id  = job["tts_task_id"]
-    srt_task_id  = job["srt_task_id"]
+    text         = actual_job["text"]
+    parent_id    = actual_job["parent_id"]
+    tts_task_id  = actual_job["tts_task_id"]
+    srt_task_id  = actual_job["srt_task_id"]
+
+    update_task_status(parent_id, tts_task_id, "IN_PROGRESS")
+    update_task_status(parent_id, srt_task_id, "IN_PROGRESS")
     
     # Debug: Log the received job structure
     log.info(f"[debug] Received job: text='{text[:50]}...', parent_id='{parent_id}', tts_task_id='{tts_task_id}', srt_task_id='{srt_task_id}'")
@@ -267,9 +304,9 @@ def process_job(job: dict):
     log.info(f"[processing] TTS task {tts_task_id} not completed, proceeding with processing")
     audio_s3     = f"s3://story-video-data/{parent_id}/{tts_task_id}.wav"
     subs_s3      = f"s3://story-video-data/{parent_id}/{srt_task_id}.srt"
-    voice        = job.get("voice", DEFAULT_VOICE)
-    speed        = float(job.get("speed", 1.0))
-    use_align    = bool(job.get("use_alignment", True))
+    voice        = actual_job.get("voice", DEFAULT_VOICE)
+    speed        = float(actual_job.get("speed", 1.0))
+    use_align    = bool(actual_job.get("use_alignment", True))
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -293,6 +330,67 @@ def process_job(job: dict):
         update_task_status(parent_id, tts_task_id, "COMPLETED")
         update_task_status(parent_id, srt_task_id, "COMPLETED")
         log.info(f"[done] updated DynamoDB tasks {tts_task_id} and {srt_task_id} to COMPLETED")
+
+# ---------- DLQ helpers ----------
+def _send_to_dlq(job: dict, error: Exception, error_category: str):
+    """
+    Send a failed message to the Dead Letter Queue.
+    
+    Args:
+        job: The original job message that failed
+        error: The exception that caused the failure
+        error_category: Category of error (e.g., "VALIDATION_ERROR", "PROCESSING_ERROR")
+    """
+    try:
+        # Get the DLQ URL from environment or construct it
+        dlq_url = os.getenv("DLQ_URL") or QUEUE_URL.replace("-tts", "-tts-dlq")
+        
+        # Send the failed message to DLQ with error context
+        dlq_message = {
+            "original_message": job,
+            "error": str(error),
+            "error_type": type(error).__name__,
+            "error_category": error_category,
+            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime()),
+            "attempt_count": 1  # Could be enhanced to track retry attempts
+        }
+        
+        # Extract task ID correctly (handle SNS envelope if present)
+        task_id = 'unknown'
+        try:
+            actual_job_for_task_id = job
+            if "Type" in job and job["Type"] == "Notification" and "Message" in job:
+                actual_job_for_task_id = json.loads(job["Message"])
+            task_id = actual_job_for_task_id.get('tts_task_id', 'unknown')
+        except (json.JSONDecodeError, KeyError):
+            task_id = 'unknown'
+        
+        # Send to DLQ
+        sqs.send_message(
+            QueueUrl=dlq_url,
+            MessageBody=json.dumps(dlq_message),
+            MessageAttributes={
+                'FAILED_TASK_ID': {
+                    'DataType': 'String',
+                    'StringValue': task_id
+                },
+                'ERROR_TYPE': {
+                    'DataType': 'String',
+                    'StringValue': type(error).__name__
+                },
+                'ERROR_CATEGORY': {
+                    'DataType': 'String',
+                    'StringValue': error_category
+                }
+            }
+        )
+        
+        print(f"[worker] Failed message sent to DLQ: {dlq_url}")
+        
+    except Exception as dlq_error:
+        print(f"[worker] Failed to send message to DLQ: {dlq_error}", file=sys.stderr)
+        # If we can't send to DLQ, at least log the original error
+        print(f"[worker] Original job error: {error}", file=sys.stderr)
 
 # ---------- Worker loop ----------
 def worker_loop():
@@ -324,45 +422,47 @@ def worker_loop():
                 
                 process_job(job)
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=rcpt)
+            except SQSMessageValidationError as e:
+                print(f"[worker] SQS message validation failed: {e}", file=sys.stderr)
+                if e.missing_fields:
+                    print(f"[worker] Missing fields: {e.missing_fields}", file=sys.stderr)
+                if e.received_fields:
+                    print(f"[worker] Received fields: {list(e.received_fields.keys())}", file=sys.stderr)
+                
+                # Send validation error to DLQ
+                _send_to_dlq(job, e, "VALIDATION_ERROR")
+                
             except Exception as e:
                 print(f"[worker] job failed: {e}", file=sys.stderr)
                 
-                # Send failed message to Dead Letter Queue
+                # If validation passed but processing failed, update task statuses to FAILED
                 try:
-                    # Get the DLQ URL from environment or construct it
-                    dlq_url = os.getenv("DLQ_URL") or QUEUE_URL.replace("-tts", "-tts-dlq")
+                    # Extract the actual job data (in case it's wrapped in SNS envelope)
+                    actual_job_for_status = job
+                    if "Type" in job and job["Type"] == "Notification" and "Message" in job:
+                        try:
+                            actual_job_for_status = json.loads(job["Message"])
+                        except json.JSONDecodeError:
+                            actual_job_for_status = job  # Fall back to original
                     
-                    # Send the failed message to DLQ with error context
-                    dlq_message = {
-                        "original_message": job,
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime()),
-                        "attempt_count": 1  # Could be enhanced to track retry attempts
-                    }
-                    
-                    # Send to DLQ
-                    sqs.send_message(
-                        QueueUrl=dlq_url,
-                        MessageBody=json.dumps(dlq_message),
-                        MessageAttributes={
-                            'FAILED_TASK_ID': {
-                                'DataType': 'String',
-                                'StringValue': job.get('tts_task_id', 'unknown')
-                            },
-                            'ERROR_TYPE': {
-                                'DataType': 'String',
-                                'StringValue': type(e).__name__
-                            }
-                        }
-                    )
-                    
-                    print(f"[worker] Failed message sent to DLQ: {dlq_url}")
-                    
-                except Exception as dlq_error:
-                    print(f"[worker] Failed to send message to DLQ: {dlq_error}", file=sys.stderr)
-                    # If we can't send to DLQ, at least log the original error
-                    print(f"[worker] Original job error: {e}", file=sys.stderr)
+                    # Extract task IDs from the actual job for status update
+                    if 'parent_id' in actual_job_for_status and 'tts_task_id' in actual_job_for_status and 'srt_task_id' in actual_job_for_status:
+                        parent_id = actual_job_for_status['parent_id']
+                        tts_task_id = actual_job_for_status['tts_task_id']
+                        srt_task_id = actual_job_for_status['srt_task_id']
+                        
+                        # Update both task statuses to FAILED
+                        update_task_status(parent_id, tts_task_id, "FAILED")
+                        update_task_status(parent_id, srt_task_id, "FAILED")
+                        print(f"[worker] Updated task statuses to FAILED for TTS: {tts_task_id}, SRT: {srt_task_id}")
+                    else:
+                        print("[worker] Could not update task statuses - missing required fields in job", file=sys.stderr)
+                        
+                except Exception as status_error:
+                    print(f"[worker] Failed to update task statuses to FAILED: {status_error}", file=sys.stderr)
+                
+                # Send failed message to Dead Letter Queue
+                _send_to_dlq(job, e, "PROCESSING_ERROR")
 
 # ---------- App startup ----------
 @app.on_event("startup")

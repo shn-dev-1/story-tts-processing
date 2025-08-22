@@ -167,8 +167,8 @@ jobs:
         DYNAMODB_TABLE="story-video-data-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
         
-        # Get the DLQ URL (assuming it follows the naming convention)
-        DLQ_URL="$(echo ${{ steps.get-aws-resources.outputs.queue_url }} | sed 's/-tts$/-tts-dlq/')"
+        # Get the TTS DLQ queue URL from the story-infra outputs
+        DLQ_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-tts-dlq --query 'QueueUrl' --output text)
         echo "dlq_url=$DLQ_URL" >> $GITHUB_OUTPUT
         
     - name: Get IAM Role ARNs

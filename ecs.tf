@@ -48,6 +48,10 @@ resource "aws_ecs_task_definition" "tts_app" {
         {
           name  = "DYNAMODB_TABLE"
           value = data.terraform_remote_state.story_infra.outputs.story_video_tasks_table_name
+        },
+        {
+          name  = "DLQ_URL"
+          value = data.terraform_remote_state.story_infra.outputs.task_queue_urls["TTS_DLQ"]
         }
       ]
 

@@ -24,6 +24,7 @@ QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaw
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
 DYNAMODB_TABLE    = os.getenv("DYNAMODB_TABLE") # DynamoDB table name from remote state
+DLQ_URL           = os.getenv("DLQ_URL") # Dead Letter Queue URL (optional, will auto-construct if not set)
 
 # Validate required environment variables
 if not QUEUE_URL:
@@ -255,6 +256,9 @@ def process_job(job: dict):
     tts_task_id  = job["tts_task_id"]
     srt_task_id  = job["srt_task_id"]
     
+    # Debug: Log the received job structure
+    log.info(f"[debug] Received job: text='{text[:50]}...', parent_id='{parent_id}', tts_task_id='{tts_task_id}', srt_task_id='{srt_task_id}'")
+    
     # Check if TTS task is already completed to avoid duplicate processing
     if is_task_completed(parent_id, tts_task_id):
         log.info(f"[skip] TTS task {tts_task_id} already completed, skipping processing")
@@ -311,12 +315,54 @@ def worker_loop():
         for m in msgs:
             rcpt = m["ReceiptHandle"]
             try:
+                # Debug: Log the raw message structure
+                print(f"[debug] Raw SQS message: {m}")
+                print(f"[debug] Message body: {m['Body']}")
+                
                 job = json.loads(m["Body"])
+                print(f"[debug] Parsed job: {job}")
+                
                 process_job(job)
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=rcpt)
             except Exception as e:
                 print(f"[worker] job failed: {e}", file=sys.stderr)
-                # Consider: DLQ or ChangeMessageVisibility here.
+                
+                # Send failed message to Dead Letter Queue
+                try:
+                    # Get the DLQ URL from environment or construct it
+                    dlq_url = os.getenv("DLQ_URL") or QUEUE_URL.replace("-tts", "-tts-dlq")
+                    
+                    # Send the failed message to DLQ with error context
+                    dlq_message = {
+                        "original_message": job,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime()),
+                        "attempt_count": 1  # Could be enhanced to track retry attempts
+                    }
+                    
+                    # Send to DLQ
+                    sqs.send_message(
+                        QueueUrl=dlq_url,
+                        MessageBody=json.dumps(dlq_message),
+                        MessageAttributes={
+                            'FAILED_TASK_ID': {
+                                'DataType': 'String',
+                                'StringValue': job.get('tts_task_id', 'unknown')
+                            },
+                            'ERROR_TYPE': {
+                                'DataType': 'String',
+                                'StringValue': type(e).__name__
+                            }
+                        }
+                    )
+                    
+                    print(f"[worker] Failed message sent to DLQ: {dlq_url}")
+                    
+                except Exception as dlq_error:
+                    print(f"[worker] Failed to send message to DLQ: {dlq_error}", file=sys.stderr)
+                    # If we can't send to DLQ, at least log the original error
+                    print(f"[worker] Original job error: {e}", file=sys.stderr)
 
 # ---------- App startup ----------
 @app.on_event("startup")

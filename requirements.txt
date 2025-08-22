@@ -1,7 +1,6 @@
 # TTS + utilities
 kokoro>=0.9.4
 soundfile
-numpy
 
 # API + runtime
 fastapi

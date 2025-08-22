@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+# Install numpy first (required by aeneas)
+RUN pip install --no-cache-dir numpy
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

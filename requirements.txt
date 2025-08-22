@@ -1,5 +1,5 @@
 # TTS + utilities
-kokoro>=0.8.2
+kokoro>=0.9.4
 soundfile
 numpy
 

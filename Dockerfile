@@ -3,6 +3,7 @@ FROM python:3.10-slim
 # Install system dependencies and build tools
 RUN apt-get update && apt-get install -y \
     espeak-ng \
+    espeak \
     ffmpeg \
     gcc \
     g++ \

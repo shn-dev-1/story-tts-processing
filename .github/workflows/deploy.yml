@@ -124,12 +124,13 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_EXECUTION_ROLE_ARN|${{ steps.get-role-arns.outputs.exec_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-queue-url.outputs.queue_url }}|g")
-        echo "$TASK_DEF" > ${{ steps.task-def.outputs.task-definition }}
+        echo "$TASK_DEF" > updated-task-definition.json
+        echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
         
     - name: Deploy Amazon ECS task definition
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
-        task-definition: ${{ steps.update-task-def.outputs.task-definition }}
+        task-definition: updated-task-definition.json
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true

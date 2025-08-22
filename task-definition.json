@@ -2,8 +2,8 @@
   "family": "story-tts-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "1024",
-  "memory": "2048",
+  "cpu": "PLACEHOLDER_CPU",
+  "memory": "PLACEHOLDER_MEMORY",
   "executionRoleArn": "PLACEHOLDER_EXECUTION_ROLE_ARN",
   "taskRoleArn": "PLACEHOLDER_TASK_ROLE_ARN",
   "containerDefinitions": [
@@ -12,7 +12,7 @@
       "image": "PLACEHOLDER_IMAGE_URI",
       "portMappings": [
         {
-          "containerPort": 8080,
+          "containerPort": "PLACEHOLDER_APP_PORT",
           "protocol": "tcp"
         }
       ],
@@ -43,7 +43,7 @@
         }
       },
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"],
+        "command": ["CMD-SHELL", "curl -f http://localhost:PLACEHOLDER_APP_PORT/healthz || exit 1"],
         "interval": 30,
         "timeout": 5,
         "retries": 3,

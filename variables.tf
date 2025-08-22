@@ -49,5 +49,5 @@ variable "cpu" {
 variable "memory" {
   description = "Memory for the task in MiB"
   type        = number
-  default     = 2048
+  default     = 4096
 }

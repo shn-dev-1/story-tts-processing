@@ -57,7 +57,7 @@ The infrastructure is designed to deploy the TTS application to ECS Fargate with
 ## Prerequisites
 
 ### Required Infrastructure (from story-infra repository)
-The following resources must exist in the `story-infra` repository:
+The following resources must exist in the `story-infra` repository and be accessible via S3 remote state:
 - VPC with private subnets
 - ECS cluster (`story-tts-cluster`)
 - SQS queue (`story-sqs-queue-tts`)
@@ -70,9 +70,12 @@ The following resources must exist in the `story-infra` repository:
 This infrastructure automatically fetches values from the `story-infra` repository:
 ```hcl
 data "terraform_remote_state" "story_infra" {
-  backend = "local"
+  backend = "s3"
   config = {
-    path = "/Users/shanesepac/Documents/dump/cursor/video-generation/story-infra/terraform.tfstate"
+    bucket         = "story-service-terraform-state"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "story-terraform-lock"
   }
 }
 ```
@@ -292,7 +295,7 @@ make info
 - **Reduced Errors**: Eliminates manual configuration mistakes
 
 ### How It Works
-1. Terraform reads the remote state file from `story-infra`
+1. Terraform reads the remote state from S3 backend (`story-service-terraform-state` bucket)
 2. Extracts required values (VPC ID, subnet IDs, queue URLs, etc.)
 3. Uses these values in the TTS application infrastructure
 4. Ensures consistency between infrastructure and application

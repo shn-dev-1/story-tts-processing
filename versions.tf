@@ -7,6 +7,14 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  backend "s3" {
+    bucket         = "story-service-terraform-state"
+    key            = "story-tts-processing/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "story-terraform-lock"
+    encrypt        = true
+  }
 }
 
 # Remote state data source for infrastructure values

@@ -2,13 +2,21 @@ import os, json, tempfile, uuid, re, threading, sys, time
 from pathlib import Path
 from typing import Optional
 
+# ---- Force HF offline at runtime (no network) ----
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+# Optional: point caches somewhere writable in the container
+os.environ.setdefault("HF_HOME", "/.cache/huggingface")
+os.environ.setdefault("TRANSFORMERS_CACHE", "/.cache/huggingface/transformers")
+
 import boto3
 from fastapi import FastAPI
 from kokoro import KPipeline  # Kokoro pipeline (Apache-2.0)
 import soundfile as sf
 
 # -------- Config via env --------
-QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs 
+QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs  
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
 
@@ -143,7 +151,7 @@ def process_job(job: dict):
 
         # 3) Upload results to S3
         _upload_s3(tts_wav, audio_s3)
-        _upload_s3(subs_srt, subs_srt)
+        _upload_s3(subs_srt, subs_s3)
 
 # ---------- Worker loop ----------
 def worker_loop():

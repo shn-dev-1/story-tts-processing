@@ -1,4 +1,4 @@
-import os, json, tempfile, uuid, re, threading, sys, time
+import os, json, tempfile, uuid, re, threading, sys, time, logging
 from pathlib import Path
 from typing import Optional
 
@@ -15,8 +15,12 @@ from fastapi import FastAPI
 from kokoro import KPipeline  # Kokoro pipeline (Apache-2.0)
 import soundfile as sf
 
+# -------- logging --------
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("worker")
+
 # -------- Config via env --------
-QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs  
+QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
 
@@ -74,34 +78,86 @@ def write_srt(items, to_path: Path):
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
     lines = []
     for i, (st, et, tx) in enumerate(items, start=1):
-        lines += [str(i), f"{fmt(st)} --> {fmt(et)}", tx.strip(), ""]
+        lines += [str(i), f"{fmt(st)} --> {fmt(et)}", (tx or "").strip(), ""]
+    to_path.parent.mkdir(parents=True, exist_ok=True)
     to_path.write_text("\n".join(lines), encoding="utf-8")
 
 def align_with_aeneas(wav_path: Path, text: str, srt_path: Path):
-    # Forced alignment using aeneas (if installed per requirements.txt)
+    """
+    Forced alignment using aeneas with explicit binary paths and debug log.
+    Raises if no file is produced so caller can fall back.
+    """
     from aeneas.executetask import ExecuteTask
     from aeneas.task import Task
+    from aeneas.runtimeconfiguration import RuntimeConfiguration
+
     cfg = "task_language=eng|is_text_type=plain|os_task_file_format=srt"
+    rconf = RuntimeConfiguration()
+    rconf[RuntimeConfiguration.FFMPEG_PATH]  = "/usr/bin/ffmpeg"
+    rconf[RuntimeConfiguration.FFPROBE_PATH] = "/usr/bin/ffprobe"
+    rconf[RuntimeConfiguration.TTS_PATH]     = "/usr/bin/espeak-ng"
+    rconf[RuntimeConfiguration.DEBUG_FILE]   = str(srt_path.parent / "aeneas_debug.log")
+
     with tempfile.TemporaryDirectory() as td:
         txt_path = Path(td) / "script.txt"
-        txt_path.write_text(text, encoding="utf-8")
+        txt = (text or "").strip()
+        txt_path.write_text(txt, encoding="utf-8")
+
         task = Task(config_string=cfg)
         task.audio_file_path_absolute = str(wav_path)
         task.text_file_path_absolute  = str(txt_path)
         task.sync_map_file_path_absolute = str(srt_path)
-        ExecuteTask(task).execute()
+
+        log.info("[subs] running aeneas forced alignment")
+        ExecuteTask(task, rconf=rconf).execute()
+
+    if not srt_path.exists() or srt_path.stat().st_size == 0:
+        raise RuntimeError("Aeneas finished but produced no SRT")
 
 def naive_sentence_srt(text: str, wav_dur_sec: float, srt_path: Path):
     # Basic sentence-splitting fallback when no aligner is used/available
-    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text or "") if s.strip()]
     if not sents:
-        sents = [text.strip()]
+        sents = [(text or " ").strip()]
     per = max(1.0, wav_dur_sec / max(1, len(sents)))
     items, t = [], 0.0
     for s in sents:
         items.append((t, min(t + per, wav_dur_sec), s))
         t += per
     write_srt(items, srt_path)
+
+def make_subtitles(tts_wav: Path, text: str, subs_srt: Path, use_align: bool):
+    """
+    Try forced alignment; if it fails or produces nothing, fall back to naive timing.
+    Guarantees subs_srt exists with nonzero size on return.
+    """
+    def duration_sec(p: Path) -> float:
+        data, sr = sf.read(str(p))
+        return float(len(data)) / float(sr)
+
+    wrote = False
+    if use_align and (text or "").strip():
+        try:
+            align_with_aeneas(tts_wav, text, subs_srt)
+            wrote = subs_srt.exists() and subs_srt.stat().st_size > 0
+            if not wrote:
+                log.warning("[subs] aeneas produced no file; will fall back")
+        except Exception as e:
+            log.warning(f"[subs] aeneas failed: {e}; will fall back")
+
+    if not wrote:
+        dur = duration_sec(tts_wav)
+        log.info(f"[subs] writing naive SRT (~{dur:.2f}s)")
+        naive_sentence_srt(text, dur, subs_srt)
+        wrote = subs_srt.exists() and subs_srt.stat().st_size > 0
+
+    if not wrote:
+        # last resort: single cue
+        log.error("[subs] creating minimal 1-line SRT fallback")
+        dur = duration_sec(tts_wav)
+        write_srt([(0.0, max(1.0, dur), text or " ")], subs_srt)
+
+    assert subs_srt.exists() and subs_srt.stat().st_size > 0, "Failed to create subs.srt"
 
 # ---------- Job processor ----------
 def process_job(job: dict):
@@ -134,24 +190,16 @@ def process_job(job: dict):
 
         # 1) TTS
         synth_to_wav(text=text, wav_path=tts_wav, voice=voice, speed=speed)
+        if not tts_wav.exists():
+            raise FileNotFoundError(f"TTS wav missing: {tts_wav}")
 
-        # 2) Subtitles
-        if use_align:
-            try:
-                align_with_aeneas(tts_wav, text, subs_srt)
-            except Exception as e:
-                print(f"[align] aeneas failed: {e}; falling back to naive timing", file=sys.stderr)
-                data, sr = sf.read(str(tts_wav))
-                dur = len(data) / sr
-                naive_sentence_srt(text, dur, subs_srt)
-        else:
-            data, sr = sf.read(str(tts_wav))
-            dur = len(data) / sr
-            naive_sentence_srt(text, dur, subs_srt)
+        # 2) Subtitles (robust)
+        make_subtitles(tts_wav, text, subs_srt, use_align=use_align)
 
         # 3) Upload results to S3
         _upload_s3(tts_wav, audio_s3)
         _upload_s3(subs_srt, subs_s3)
+        log.info(f"[done] uploaded wav -> {audio_s3}, srt -> {subs_s3}")
 
 # ---------- Worker loop ----------
 def worker_loop():

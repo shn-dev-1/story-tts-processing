@@ -14,7 +14,7 @@ resource "aws_ecr_repository" "tts_app" {
   }
 }
 
-# ECR Repository Policy
+# ECR Repository Policy 
 resource "aws_ecr_repository_policy" "tts_app" {
   repository = aws_ecr_repository.tts_app.name
 

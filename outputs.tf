@@ -46,24 +46,6 @@ output "log_group_arn" {
   value       = aws_cloudwatch_log_group.tts_app.arn
 }
 
-# Service Discovery outputs
-output "service_discovery_namespace_id" {
-  description = "ID of the service discovery namespace"
-  value       = aws_service_discovery_private_dns_namespace.tts_app.id
-}
+# Service Discovery outputs removed - resources were simplified
 
-output "service_discovery_service_id" {
-  description = "ID of the service discovery service"
-  value       = aws_service_discovery_service.tts_app.id
-}
-
-# Security Group outputs
-output "security_group_id" {
-  description = "ID of the TTS application security group"
-  value       = aws_security_group.tts_app.id
-}
-
-output "security_group_name" {
-  description = "Name of the TTS application security group"
-  value       = aws_security_group.tts_app.name
-}
+# Security Group outputs removed - using infrastructure security group

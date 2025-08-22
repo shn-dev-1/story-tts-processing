@@ -4,6 +4,7 @@ FROM python:3.10-slim
 RUN apt-get update && apt-get install -y \
     espeak-ng \
     espeak \
+    libespeak-dev \
     ffmpeg \
     gcc \
     g++ \

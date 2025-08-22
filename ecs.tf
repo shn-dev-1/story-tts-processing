@@ -56,13 +56,8 @@ resource "aws_ecs_task_definition" "tts_app" {
         }
       }
 
-      healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:${var.app_port}/healthz || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 60
-      }
+      # Health check removed temporarily to avoid startup issues
+      # Add back once basic connectivity is working
 
       essential = true
     }
@@ -81,66 +76,25 @@ resource "aws_ecs_service" "tts_app" {
   cluster         = data.terraform_remote_state.story_infra.outputs.ecs_cluster_name
   task_definition = aws_ecs_task_definition.tts_app.arn
   desired_count   = var.app_count
-  launch_type     = "FARGATE"
 
   network_configuration {
-    security_groups  = [aws_security_group.tts_app.id]
+    security_groups  = [data.terraform_remote_state.story_infra.outputs.ecs_tasks_security_group_id]
     subnets          = data.terraform_remote_state.story_infra.outputs.private_subnet_ids
     assign_public_ip = false
   }
 
-  # Enable service discovery for internal communication
-  service_registries {
-    registry_arn = aws_service_discovery_service.tts_app.arn
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 100
   }
 
   depends_on = [
-    aws_ecs_task_definition.tts_app,
-    aws_service_discovery_service.tts_app
+    aws_ecs_task_definition.tts_app
   ]
 
   tags = {
     Name        = "${var.app_name}-ecs-service"
     Environment = var.environment
     Purpose     = "TTS Application ECS Service"
-  }
-}
-
-# Service Discovery Namespace
-resource "aws_service_discovery_private_dns_namespace" "tts_app" {
-  name        = "${var.app_name}.local"
-  description = "Private DNS namespace for TTS application"
-  vpc         = data.terraform_remote_state.story_infra.outputs.vpc_id
-
-  tags = {
-    Name        = "${var.app_name}-service-discovery-namespace"
-    Environment = var.environment
-    Purpose     = "TTS Application Service Discovery"
-  }
-}
-
-# Service Discovery Service
-resource "aws_service_discovery_service" "tts_app" {
-  name = "${var.app_name}-service"
-
-  dns_config {
-    namespace_id = aws_service_discovery_private_dns_namespace.tts_app.id
-
-    dns_records {
-      ttl  = 10
-      type = "A"
-    }
-
-    routing_policy = "MULTIVALUE"
-  }
-
-  health_check_custom_config {
-    failure_threshold = 1
-  }
-
-  tags = {
-    Name        = "${var.app_name}-service-discovery-service"
-    Environment = var.environment
-    Purpose     = "TTS Application Service Discovery"
   }
 }

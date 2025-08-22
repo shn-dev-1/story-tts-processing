@@ -250,7 +250,7 @@ def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = 
         response = dynamodb.update_item(
             TableName=table_name,
             Key={
-                'parent_id': {'S': parent_id},
+                'id': {'S': parent_id},
                 'task_id': {'S': task_id}
             },
             UpdateExpression=update_expression,

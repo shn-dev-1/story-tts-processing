@@ -1,0 +1,22 @@
+# AWS Configuration
+aws_region = "us-east-1"
+environment = "production"
+
+# Application Configuration
+app_name = "story-tts"
+ecr_repository_name = "story-tts"
+app_image_tag = "latest"
+app_count = 1
+
+# ECS Configuration
+cpu = 1024
+memory = 2048
+app_port = 8000
+
+# Note: The following values are automatically fetched from the story-infra repository:
+# - vpc_id
+# - private_subnet_ids
+# - sqs_queue_url and sqs_queue_arn
+# - s3_bucket_name
+# - dynamodb_table_name
+# - task_execution_role_arn and task_role_arn

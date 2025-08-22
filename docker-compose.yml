@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  tts-processor:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - QUEUE_URL=${QUEUE_URL}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_heart}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ./outputs:/app/outputs
+      - ~/.aws:/root/.aws:ro
+    restart: unless-stopped
+    depends_on: []

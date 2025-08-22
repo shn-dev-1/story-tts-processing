@@ -1,0 +1,12 @@
+# TTS + utilities
+kokoro>=0.8.2
+soundfile
+numpy
+
+# API + runtime
+fastapi
+uvicorn[standard]
+boto3
+
+# For simple alignment (optional). If you prefer MFA, omit this and run MFA in a separate job/image.
+aeneas==1.7.3

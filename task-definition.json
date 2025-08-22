@@ -1,0 +1,51 @@
+{
+  "family": "story-tts-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": 1024,
+  "memory": 2048,
+  "executionRoleArn": "PLACEHOLDER_EXECUTION_ROLE_ARN",
+  "taskRoleArn": "PLACEHOLDER_TASK_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "story-tts-container",
+      "image": "PLACEHOLDER_IMAGE_URI",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "QUEUE_URL",
+          "value": "PLACEHOLDER_QUEUE_URL"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "KOKORO_VOICE",
+          "value": "af_heart"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/story-tts",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "essential": true
+    }
+  ]
+}

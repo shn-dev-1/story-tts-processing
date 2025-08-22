@@ -32,10 +32,6 @@
         {
           "name": "DYNAMODB_TABLE",
           "value": "PLACEHOLDER_DYNAMODB_TABLE"
-        },
-        {
-          "name": "DLQ_URL",
-          "value": "PLACEHOLDER_DLQ_URL"
         }
       ],
       "logConfiguration": {

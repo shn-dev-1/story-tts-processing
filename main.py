@@ -37,7 +37,6 @@ QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaw
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
 DYNAMODB_TABLE    = os.getenv("DYNAMODB_TABLE") # DynamoDB table name from remote state
-DLQ_URL           = os.getenv("DLQ_URL") # Dead Letter Queue URL (optional, will auto-construct if not set)
 
 # Validate required environment variables
 if not QUEUE_URL:
@@ -211,33 +210,52 @@ def is_task_completed(parent_id: str, task_id: str) -> bool:
         log.error(f"[dynamodb] Failed to check task status for {task_id}: {e}")
         raise RuntimeError(f"Unable to verify task status for {task_id}. DynamoDB check failed: {e}") from e
 
-def update_task_status(parent_id: str, task_id: str, status: str = "COMPLETED"):
+def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = None):
     """
     Update the status of a task in DynamoDB.
     
     Args:
         parent_id: The partition key (parent_id)
         task_id: The sort key (tts_task_id or srt_task_id)
-        status: The status to set (default: "COMPLETED")
+        status: The status to set
+        s3_url: Optional S3 URI to set in the media_url field
     """
     table_name = DYNAMODB_TABLE
     
     try:
+        # Build update expression based on status and s3_url
+        set_parts = ['#status = :status', '#date_updated = :date_updated']
+        expression_attribute_names = {
+            '#status': 'status',
+            '#date_updated': 'date_updated'
+        }
+        expression_attribute_values = {
+            ':status': {'S': status},
+            ':date_updated': {'S': time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime())}
+        }
+        
+        # Add media_url if provided
+        if s3_url:
+            set_parts.append('#media_url = :media_url')
+            expression_attribute_names['#media_url'] = 'media_url'
+            expression_attribute_values[':media_url'] = {'S': s3_url}
+        
+        # Build the update expression with proper comma separation
+        update_expression = f"SET {', '.join(set_parts)}"
+        
+        # Only remove sparse_gsi_hash_key if status is COMPLETED
+        if status == "COMPLETED":
+            update_expression += " REMOVE sparse_gsi_hash_key"
+        
         response = dynamodb.update_item(
             TableName=table_name,
             Key={
                 'parent_id': {'S': parent_id},
                 'task_id': {'S': task_id}
             },
-            UpdateExpression='SET #status = :status, #date_updated = :date_updated REMOVE sparse_gsi_hash_key',
-            ExpressionAttributeNames={
-                '#status': 'status',
-                '#date_updated': 'date_updated'
-            },
-            ExpressionAttributeValues={
-                ':status': {'S': status},
-                ':date_updated': {'S': time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime())}
-            },
+            UpdateExpression=update_expression,
+            ExpressionAttributeNames=expression_attribute_names,
+            ExpressionAttributeValues=expression_attribute_values,
             ReturnValues='UPDATED_NEW'
         )
         log.info(f"[dynamodb] Updated task {task_id} status to {status}")
@@ -326,71 +344,10 @@ def process_job(job: dict):
         _upload_s3(subs_srt, subs_s3)
         log.info(f"[done] uploaded wav -> {audio_s3}, srt -> {subs_s3}")
 
-        # 4) Update DynamoDB task status to COMPLETED
-        update_task_status(parent_id, tts_task_id, "COMPLETED")
-        update_task_status(parent_id, srt_task_id, "COMPLETED")
+        # 4) Update DynamoDB task status to COMPLETED with S3 URIs
+        update_task_status(parent_id, tts_task_id, "COMPLETED", audio_s3)
+        update_task_status(parent_id, srt_task_id, "COMPLETED", subs_s3)
         log.info(f"[done] updated DynamoDB tasks {tts_task_id} and {srt_task_id} to COMPLETED")
-
-# ---------- DLQ helpers ----------
-def _send_to_dlq(job: dict, error: Exception, error_category: str):
-    """
-    Send a failed message to the Dead Letter Queue.
-    
-    Args:
-        job: The original job message that failed
-        error: The exception that caused the failure
-        error_category: Category of error (e.g., "VALIDATION_ERROR", "PROCESSING_ERROR")
-    """
-    try:
-        # Get the DLQ URL from environment or construct it
-        dlq_url = os.getenv("DLQ_URL") or QUEUE_URL.replace("-tts", "-tts-dlq")
-        
-        # Send the failed message to DLQ with error context
-        dlq_message = {
-            "original_message": job,
-            "error": str(error),
-            "error_type": type(error).__name__,
-            "error_category": error_category,
-            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime()),
-            "attempt_count": 1  # Could be enhanced to track retry attempts
-        }
-        
-        # Extract task ID correctly (handle SNS envelope if present)
-        task_id = 'unknown'
-        try:
-            actual_job_for_task_id = job
-            if "Type" in job and job["Type"] == "Notification" and "Message" in job:
-                actual_job_for_task_id = json.loads(job["Message"])
-            task_id = actual_job_for_task_id.get('tts_task_id', 'unknown')
-        except (json.JSONDecodeError, KeyError):
-            task_id = 'unknown'
-        
-        # Send to DLQ
-        sqs.send_message(
-            QueueUrl=dlq_url,
-            MessageBody=json.dumps(dlq_message),
-            MessageAttributes={
-                'FAILED_TASK_ID': {
-                    'DataType': 'String',
-                    'StringValue': task_id
-                },
-                'ERROR_TYPE': {
-                    'DataType': 'String',
-                    'StringValue': type(error).__name__
-                },
-                'ERROR_CATEGORY': {
-                    'DataType': 'String',
-                    'StringValue': error_category
-                }
-            }
-        )
-        
-        print(f"[worker] Failed message sent to DLQ: {dlq_url}")
-        
-    except Exception as dlq_error:
-        print(f"[worker] Failed to send message to DLQ: {dlq_error}", file=sys.stderr)
-        # If we can't send to DLQ, at least log the original error
-        print(f"[worker] Original job error: {error}", file=sys.stderr)
 
 # ---------- Worker loop ----------
 def worker_loop():
@@ -429,9 +386,6 @@ def worker_loop():
                 if e.received_fields:
                     print(f"[worker] Received fields: {list(e.received_fields.keys())}", file=sys.stderr)
                 
-                # Send validation error to DLQ
-                _send_to_dlq(job, e, "VALIDATION_ERROR")
-                
             except Exception as e:
                 print(f"[worker] job failed: {e}", file=sys.stderr)
                 
@@ -460,9 +414,6 @@ def worker_loop():
                         
                 except Exception as status_error:
                     print(f"[worker] Failed to update task statuses to FAILED: {status_error}", file=sys.stderr)
-                
-                # Send failed message to Dead Letter Queue
-                _send_to_dlq(job, e, "PROCESSING_ERROR")
 
 # ---------- App startup ----------
 @app.on_event("startup")

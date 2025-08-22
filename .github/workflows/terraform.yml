@@ -164,12 +164,8 @@ jobs:
         echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
         
         # Get the DynamoDB table name (assuming it follows the naming convention)
-        DYNAMODB_TABLE="story-video-data-tasks"
+        DYNAMODB_TABLE="story-video-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
-        
-        # Get the TTS DLQ queue URL from the story-infra outputs
-        DLQ_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-tts-dlq --query 'QueueUrl' --output text)
-        echo "dlq_url=$DLQ_URL" >> $GITHUB_OUTPUT
         
     - name: Get IAM Role ARNs
       id: get-role-arns
@@ -197,7 +193,6 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DLQ_URL|${{ steps.get-aws-resources.outputs.dlq_url }}|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
         

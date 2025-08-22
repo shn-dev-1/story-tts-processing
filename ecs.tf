@@ -44,6 +44,10 @@ resource "aws_ecs_task_definition" "tts_app" {
         {
           name  = "KOKORO_VOICE"
           value = "af_heart"
+        },
+        {
+          name  = "DYNAMODB_TABLE"
+          value = data.terraform_remote_state.story_infra.outputs.story_video_tasks_table_name
         }
       ]
 
@@ -56,8 +60,13 @@ resource "aws_ecs_task_definition" "tts_app" {
         }
       }
 
-      # Health check removed temporarily to avoid startup issues
-      # Add back once basic connectivity is working
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.app_port}/healthz || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 60
+      }
 
       essential = true
     }

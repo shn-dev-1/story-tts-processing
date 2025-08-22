@@ -156,12 +156,16 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
         
-    - name: Get SQS Queue URL
-      id: get-queue-url
+    - name: Get SQS Queue URL and DynamoDB Table Name
+      id: get-aws-resources
       run: |
         # Get the TTS queue URL from the story-infra outputs
         QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-tts --query 'QueueUrl' --output text)
         echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
+        
+        # Get the DynamoDB table name (assuming it follows the naming convention)
+        DYNAMODB_TABLE="story-video-data-tasks"
+        echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
         
     - name: Get IAM Role ARNs
       id: get-role-arns
@@ -180,14 +184,15 @@ jobs:
         container-name: story-tts-container
         image: ${{ steps.build-image.outputs.image }}
         
-    - name: Update task definition with role ARNs and queue URL
+    - name: Update task definition with role ARNs, queue URL, and DynamoDB table
       id: update-task-def
       run: |
         # Update the task definition with the actual values
         TASK_DEF=$(cat ${{ steps.task-def.outputs.task-definition }})
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_EXECUTION_ROLE_ARN|${{ steps.get-role-arns.outputs.exec_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-queue-url.outputs.queue_url }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
         

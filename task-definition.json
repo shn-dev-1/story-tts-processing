@@ -12,7 +12,7 @@
       "image": "PLACEHOLDER_IMAGE_URI",
       "portMappings": [
         {
-          "containerPort": 8000,
+          "containerPort": 8080,
           "protocol": "tcp"
         }
       ],
@@ -28,6 +28,10 @@
         {
           "name": "KOKORO_VOICE",
           "value": "af_heart"
+        },
+        {
+          "name": "DYNAMODB_TABLE",
+          "value": "PLACEHOLDER_DYNAMODB_TABLE"
         }
       ],
       "logConfiguration": {
@@ -39,7 +43,7 @@
         }
       },
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"],
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"],
         "interval": 30,
         "timeout": 5,
         "retries": 3,

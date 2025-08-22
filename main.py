@@ -23,15 +23,21 @@ log = logging.getLogger("worker")
 QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
+DYNAMODB_TABLE    = os.getenv("DYNAMODB_TABLE") # DynamoDB table name from remote state
 
 # Validate required environment variables
 if not QUEUE_URL:
     print("[ERROR] QUEUE_URL environment variable is required but not set", file=sys.stderr)
     sys.exit(1)
 
+if not DYNAMODB_TABLE:
+    print("[ERROR] DYNAMODB_TABLE environment variable is required but not set", file=sys.stderr)
+    sys.exit(1)
+
 # AWS clients
 s3   = boto3.client("s3", region_name=AWS_REGION)
 sqs  = boto3.client("sqs",  region_name=AWS_REGION)
+dynamodb = boto3.client("dynamodb", region_name=AWS_REGION)
 
 # Preload Kokoro (English fast path)
 pipeline = KPipeline(lang_code='a')  # 'a' = English voices
@@ -159,26 +165,104 @@ def make_subtitles(tts_wav: Path, text: str, subs_srt: Path, use_align: bool):
 
     assert subs_srt.exists() and subs_srt.stat().st_size > 0, "Failed to create subs.srt"
 
+# ---------- DynamoDB helpers ----------
+def is_task_completed(parent_id: str, task_id: str) -> bool:
+    """
+    Check if a task is already completed in DynamoDB.
+    
+    Args:
+        parent_id: The partition key (parent_id)
+        task_id: The sort key (tts_task_id or srt_task_id)
+    
+    Returns:
+        bool: True if task is completed, False otherwise
+    """
+    try:
+        response = dynamodb.get_item(
+            TableName=DYNAMODB_TABLE,
+            Key={
+                'parent_id': {'S': parent_id},
+                'task_id': {'S': task_id}
+            }
+        )
+        
+        if 'Item' in response:
+            item = response['Item']
+            if 'status' in item and item['status']['S'] == 'COMPLETED':
+                return True
+        
+        return False
+        
+    except Exception as e:
+        log.error(f"[dynamodb] Failed to check task status for {task_id}: {e}")
+        raise RuntimeError(f"Unable to verify task status for {task_id}. DynamoDB check failed: {e}") from e
+
+def update_task_status(parent_id: str, task_id: str, status: str = "COMPLETED"):
+    """
+    Update the status of a task in DynamoDB.
+    
+    Args:
+        parent_id: The partition key (parent_id)
+        task_id: The sort key (tts_task_id or srt_task_id)
+        status: The status to set (default: "COMPLETED")
+    """
+    table_name = DYNAMODB_TABLE
+    
+    try:
+        response = dynamodb.update_item(
+            TableName=table_name,
+            Key={
+                'parent_id': {'S': parent_id},
+                'task_id': {'S': task_id}
+            },
+            UpdateExpression='SET #status = :status, #date_updated = :date_updated REMOVE sparse_gsi_hash_key',
+            ExpressionAttributeNames={
+                '#status': 'status',
+                '#date_updated': 'date_updated'
+            },
+            ExpressionAttributeValues={
+                ':status': {'S': status},
+                ':date_updated': {'S': time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime())}
+            },
+            ReturnValues='UPDATED_NEW'
+        )
+        log.info(f"[dynamodb] Updated task {task_id} status to {status}")
+        return response
+    except Exception as e:
+        log.error(f"[dynamodb] Failed to update task {task_id}: {e}")
+        raise
+
 # ---------- Job processor ----------
 def process_job(job: dict):
     """
     Expected SQS job message body (JSON):
     {
       "text": "Hello world. This is a test.",
-      "audio_out": "s3://my-bucket/out/job-123/audio.wav",
-      "subs_out":  "s3://my-bucket/out/job-123/subs.srt",
+      "parent_id": "12312312", # parent_id of the task
+      "tts_task_id": "12312311", # tts_task_id of the task
+      "srt_task_id": "12312310", # srt_task_id of the task
       "voice": "af_heart",          # optional
       "speed": 1.0,                 # optional
       "use_alignment": true         # optional; if false => naive timing
     }
     """
     # Required fields
-    if "text" not in job or "audio_out" not in job or "subs_out" not in job:
-        raise ValueError("Job must include 'text', 'audio_out', and 'subs_out' fields.")
+    if "text" not in job or "parent_id" not in job or "tts_task_id" not in job or "srt_task_id" not in job:
+        raise ValueError("Job must include 'text', 'parent_id', 'tts_task_id', and 'srt_task_id' fields.")
 
     text         = job["text"]
-    audio_s3     = job["audio_out"]
-    subs_s3      = job["subs_out"]
+    parent_id    = job["parent_id"]
+    tts_task_id  = job["tts_task_id"]
+    srt_task_id  = job["srt_task_id"]
+    
+    # Check if TTS task is already completed to avoid duplicate processing
+    if is_task_completed(parent_id, tts_task_id):
+        log.info(f"[skip] TTS task {tts_task_id} already completed, skipping processing")
+        return  # Exit early, message will be deleted by caller
+    
+    log.info(f"[processing] TTS task {tts_task_id} not completed, proceeding with processing")
+    audio_s3     = f"s3://story-video-data/{parent_id}/{tts_task_id}.wav"
+    subs_s3      = f"s3://story-video-data/{parent_id}/{srt_task_id}.srt"
     voice        = job.get("voice", DEFAULT_VOICE)
     speed        = float(job.get("speed", 1.0))
     use_align    = bool(job.get("use_alignment", True))
@@ -200,6 +284,11 @@ def process_job(job: dict):
         _upload_s3(tts_wav, audio_s3)
         _upload_s3(subs_srt, subs_s3)
         log.info(f"[done] uploaded wav -> {audio_s3}, srt -> {subs_s3}")
+
+        # 4) Update DynamoDB task status to COMPLETED
+        update_task_status(parent_id, tts_task_id, "COMPLETED")
+        update_task_status(parent_id, srt_task_id, "COMPLETED")
+        log.info(f"[done] updated DynamoDB tasks {tts_task_id} and {srt_task_id} to COMPLETED")
 
 # ---------- Worker loop ----------
 def worker_loop():

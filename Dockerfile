@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     gcc g++ make \
     libxml2-dev libxslt1-dev zlib1g-dev pkg-config \
+    curl \
+    wget \
   && rm -rf /var/lib/apt/lists/*
 
 ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

@@ -31,7 +31,7 @@ variable "app_image_tag" {
 variable "app_port" {
   description = "Port the application listens on"
   type        = number
-  default     = 8000
+  default     = 8080
 }
 
 variable "app_count" {

@@ -194,7 +194,7 @@ def is_task_completed(parent_id: str, task_id: str) -> bool:
         response = dynamodb.get_item(
             TableName=DYNAMODB_TABLE,
             Key={
-                'parent_id': {'S': parent_id},
+                'id': {'S': parent_id},
                 'task_id': {'S': task_id}
             }
         )

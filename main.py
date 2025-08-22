@@ -8,7 +8,7 @@ from kokoro import KPipeline  # Kokoro pipeline (Apache-2.0)
 import soundfile as sf
 
 # -------- Config via env --------
-QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs
+QUEUE_URL         = os.getenv("QUEUE_URL") # e.g. https://sqs.us-east-1.amazonaws.com/123/tts-jobs 
 AWS_REGION        = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_VOICE     = os.getenv("KOKORO_VOICE", "af_heart") # change as desired
 

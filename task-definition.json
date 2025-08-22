@@ -2,8 +2,8 @@
   "family": "story-tts-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": 1024,
-  "memory": 2048,
+  "cpu": "1024",
+  "memory": "2048",
   "executionRoleArn": "PLACEHOLDER_EXECUTION_ROLE_ARN",
   "taskRoleArn": "PLACEHOLDER_TASK_ROLE_ARN",
   "containerDefinitions": [

@@ -1,71 +1,63 @@
-# syntax=docker/dockerfile:1.6
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    LANG=C.UTF-8 LC_ALL=C.UTF-8
-
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libjpeg62-turbo zlib1g \
+    ca-certificates \
+    espeak-ng \
+    libespeak-dev \
+    libsndfile1 \
+    ffmpeg \
+    gcc g++ make \
+    libxml2-dev libxslt1-dev zlib1g-dev pkg-config \
+    curl \
+    wget \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-# Ensure requirements.txt is present before pip install
-COPY requirements.txt /app/requirements.txt
-
-# Install wheels: toolchain + CPU torch/ORT first (ARM64-friendly)
-ENV PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --only-binary=:all: --extra-index-url $PYTORCH_INDEX_URL \
-        torch==2.1.0 onnxruntime==1.17.0 && \
-    pip install --only-binary=:all: -r /app/requirements.txt
-
-# --- Model caching (ONLINE during build only) ---
-# One cache location used at build+runtime
+# --- Use ONE cache path for both build-time prewarm AND runtime ---
 ENV HF_HOME=/opt/hfcache \
     HUGGINGFACE_HUB_CACHE=/opt/hfcache/hub \
     TRANSFORMERS_CACHE=/opt/hfcache/transformers \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    MODEL_DIR=/opt/models/sd15-onnx
+    HF_HUB_DISABLE_TELEMETRY=1
 
-RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers $MODEL_DIR
+# Create cache dirs and make them writable later
+RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers
 
-# Choose an ONNX export of SD1.5; you can override at build time:
-#   docker buildx build --platform linux/arm64 --build-arg MODEL_REPO="your/repo" ...
-ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
+WORKDIR /app
+COPY requirements.txt /app/
 
-# Download only needed files into MODEL_DIR; ensure offline envs are NOT set during this step
+# Tooling + numpy before aeneas
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install numpy && \
+    pip install -r requirements.txt
+
+# --- PREWARM into /opt/hfcache (same path we use at runtime) ---
 RUN python - <<'PY'
 import os
-from huggingface_hub import snapshot_download
-# make sure offline flags don't block download at build-time
+# make sure offline is NOT set during prewarm
 os.environ.pop("HF_HUB_OFFLINE", None)
 os.environ.pop("TRANSFORMERS_OFFLINE", None)
-repo  = os.environ.get("MODEL_REPO")
-target= os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx")
-# pull common ONNX pipeline files (model_index.json + .onnx + tokenizer assets)
-snapshot_download(
-    repo_id=repo,
-    local_dir=target,
-    local_dir_use_symlinks=False,
-    allow_patterns=[
-        "model_index.json",
-        "**/*.onnx",
-        "tokenizer/**",
-        "vocab*.json", "merges.txt", "tokenizer.json", "special_tokens_map.json",
-        "scheduler/**", "feature_extractor/**", "text_encoder/config.json", "vae/config.json", "unet/config.json"
-    ],
-)
-print("Downloaded model into:", target)
+from kokoro import KPipeline
+import soundfile as sf
+pipe = KPipeline(lang_code='a')                 # loads model into HF cache
+gen = pipe("cache warmup", voice="af_heart")    # pull voice assets too
+_, _, audio = next(iter(gen))
+sf.write("warmup.wav", audio, 24000)
+print("Kokoro prewarmed into", os.getenv("HF_HOME"))
 PY
+RUN rm -f warmup.wav
 
-# Force offline for runtime
-ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+# --- NOW force offline for runtime, keep same cache path ---
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
-# Copy app last (keeps layer cache)
+# Ensure app user can read the cache
+RUN chown -R nobody:nogroup /opt/hfcache
+
+# Your app (main.py is adjacent to Dockerfile)
 COPY main.py /app/main.py
 
+USER nobody
 EXPOSE 8080
 CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=8080"]
